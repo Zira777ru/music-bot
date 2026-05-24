@@ -130,17 +130,22 @@ async def run_ytdlp(url: str, playlist: bool, msg) -> tuple[int, list[str], str]
     if DENO_PATH:
         env["PATH"] = f"{DENO_PATH}:{env.get('PATH', '')}"
 
+    # Slice artist/title in template — YouTube Music tracks sometimes have 200-char
+    # artist lists ("X, Y, Z, A, B, …") which blow past the CIFS 255-byte filename limit.
+    artist_part = "%(artist.0:60,uploader.0:60)s"
+    title_part = "%(title.0:90)s"
     if playlist:
-        out_tpl = str(MUSIC_DIR / "%(playlist_title)s/%(playlist_index)02d - %(artist,uploader)s - %(title)s.%(ext)s")
+        out_tpl = str(MUSIC_DIR / f"%(playlist_title.0:80)s/%(playlist_index)02d - {artist_part} - {title_part}.%(ext)s")
         flag = "--yes-playlist"
     else:
-        out_tpl = str(MUSIC_DIR / "%(artist,uploader)s - %(title)s.%(ext)s")
+        out_tpl = str(MUSIC_DIR / f"{artist_part} - {title_part}.%(ext)s")
         flag = "--no-playlist"
 
     cmd = [
         YT_DLP,
         "--newline",  # one progress line at a time
         "--ignore-errors",  # skip broken tracks in a playlist instead of aborting
+        "--trim-filenames", "200",  # belt-and-suspenders for filename length
         "--extract-audio",
         "--audio-format", "mp3",
         "--audio-quality", "0",
@@ -155,10 +160,11 @@ async def run_ytdlp(url: str, playlist: bool, msg) -> tuple[int, list[str], str]
     ]
     if playlist:
         # Otherwise Navidrome shows each track as a separate "Unknown Album".
+        # NB: --parse-metadata source field requires %(...)s syntax for alternation.
         cmd += [
-            "--parse-metadata", "playlist_title:%(album)s",
-            "--parse-metadata", "playlist_index:%(track_number)s",
-            "--parse-metadata", "playlist_uploader,uploader:%(album_artist)s",
+            "--parse-metadata", "%(playlist_title)s:%(album)s",
+            "--parse-metadata", "%(playlist_index)s:%(track_number)s",
+            "--parse-metadata", "%(playlist_uploader,uploader)s:%(album_artist)s",
         ]
     cmd.append(url)
     log.info("yt-dlp: %s (playlist=%s)", url, playlist)
