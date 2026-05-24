@@ -1,0 +1,9 @@
+services:
+  music-bot:
+    build: .
+    restart: unless-stopped
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - MUSIC_DIR=/music
+    volumes:
+      - /mnt/nas/music:/music
