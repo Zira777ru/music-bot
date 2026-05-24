@@ -146,6 +146,8 @@ async def run_ytdlp(url: str, playlist: bool, msg) -> tuple[int, list[str], str]
         "--audio-quality", "0",
         "--embed-thumbnail",
         "--embed-metadata",
+        # YouTube (2025+) JS challenges — auto-fetch solver from yt-dlp/ejs GitHub releases.
+        "--remote-components", "ejs:github",
         # Multiple YouTube clients — needed for YT Music auto-generated tracks
         "--extractor-args", "youtube:player_client=default,web_music,mweb,ios",
         "-o", out_tpl,
