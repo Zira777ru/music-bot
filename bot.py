@@ -22,7 +22,9 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 TOKEN = os.environ["BOT_TOKEN"]
 MUSIC_DIR = Path(os.environ.get("MUSIC_DIR", "/mnt/nas/music"))
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "282311426"))
-ALLOWED_USERS = {ADMIN_ID}
+# ALLOWED_USERS = CSV в env: "282311426,1010547106". ADMIN_ID всегда включён.
+_extra = os.environ.get("ALLOWED_USERS", "")
+ALLOWED_USERS = {ADMIN_ID} | {int(x) for x in _extra.split(",") if x.strip().isdigit()}
 YT_DLP = os.environ.get("YT_DLP_BIN", "yt-dlp")  # resolved via PATH
 DENO_PATH = os.environ.get("DENO_PATH", "")  # prepended to PATH if set
 LOG_FILE = os.environ.get("LOG_FILE")  # optional file log; stdout always on
