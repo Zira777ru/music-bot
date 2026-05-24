@@ -140,11 +140,14 @@ async def run_ytdlp(url: str, playlist: bool, msg) -> tuple[int, list[str], str]
     cmd = [
         YT_DLP,
         "--newline",  # one progress line at a time
+        "--ignore-errors",  # skip broken tracks in a playlist instead of aborting
         "--extract-audio",
         "--audio-format", "mp3",
         "--audio-quality", "0",
         "--embed-thumbnail",
         "--embed-metadata",
+        # Multiple YouTube clients — needed for YT Music auto-generated tracks
+        "--extractor-args", "youtube:player_client=default,web_music,mweb,ios",
         "-o", out_tpl,
         flag,
     ]
@@ -166,7 +169,8 @@ async def run_ytdlp(url: str, playlist: bool, msg) -> tuple[int, list[str], str]
     )
 
     state = {"pct": None, "size": None, "speed": None, "eta": None,
-             "cur_item": 0, "total_items": 0, "title": "", "files": [], "tail": []}
+             "cur_item": 0, "total_items": 0, "title": "", "files": [],
+             "errors": [], "tail": []}
     last_edit = 0.0
     last_text = ""
 
@@ -187,6 +191,10 @@ async def run_ytdlp(url: str, playlist: bool, msg) -> tuple[int, list[str], str]
             if m := RE_PLITEM.search(s):
                 state["cur_item"], state["total_items"] = int(m.group(1)), int(m.group(2))
                 state["pct"] = 0.0
+            if s.startswith("ERROR:"):
+                # одна строка на упавший трек: "ERROR: [youtube] XXX: This video is not available"
+                short = s.replace("ERROR: ", "")[:160]
+                state["errors"].append(short)
             if m := RE_DEST.search(s):
                 state["title"] = Path(m.group(1)).stem
                 state["files"].append(m.group(1))
@@ -216,7 +224,7 @@ async def run_ytdlp(url: str, playlist: bool, msg) -> tuple[int, list[str], str]
         proc.kill()
         await proc.wait()
         raise
-    return rc, state["files"], "\n".join(state["tail"][-15:])
+    return rc, state["files"], state["errors"], "\n".join(state["tail"][-15:])
 
 
 async def notify_admin(context: ContextTypes.DEFAULT_TYPE, text: str):
@@ -289,7 +297,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE, force_p
     msg = await update.message.reply_text(f"⏳ Распознан {mode_label}, начинаю...")
 
     try:
-        rc, files, tail = await run_ytdlp(text, playlist, msg)
+        rc, files, errors, tail = await run_ytdlp(text, playlist, msg)
     except asyncio.TimeoutError:
         await safe_edit(msg, "❌ Таймаут")
         await notify_admin(context, f"⚠️ music-bot timeout\nURL: {text}")
@@ -300,27 +308,34 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE, force_p
         await notify_admin(context, f"⚠️ music-bot exception\nURL: {text}\n<pre>{traceback.format_exc()[-1500:]}</pre>")
         return
 
-    if rc == 0:
+    log.info("rc=%s files=%d errors=%d", rc, len(files), len(errors))
+
+    if files:
+        # Хоть что-то скачалось → успех (даже если часть треков битая)
         scan_ok, scan_msg = await trigger_navidrome_scan()
         scan_line = "🔄 Navidrome сканирует…" if scan_ok else f"⚠️ scan: {scan_msg} (auto-scan раз в час)"
-        log.info("scan triggered: ok=%s msg=%s", scan_ok, scan_msg)
-        if files:
-            sample = "\n".join(f"• {Path(f).name}" for f in files[:5])
-            extra = f"\n… и ещё {len(files) - 5}" if len(files) > 5 else ""
-            done = f"✅ Скачано ({len(files)})\n{sample}{extra}\n\n{scan_line}"
-        else:
-            done = f"✅ Скачано (без файлов в логе?). Проверь NAS.\n{scan_line}"
-        await safe_edit(msg, done)
-        log.info("done: %d files", len(files))
+        sample = "\n".join(f"• {Path(f).name}" for f in files[:5])
+        extra = f"\n… и ещё {len(files) - 5}" if len(files) > 5 else ""
+        head = f"✅ Скачано: {len(files)}"
+        if errors:
+            head += f" · ⚠️ битых: {len(errors)}"
+        body = f"{head}\n{sample}{extra}"
+        if errors:
+            err_sample = "\n".join(f"• {e}" for e in errors[:3])
+            err_extra = f"\n… и ещё {len(errors) - 3}" if len(errors) > 3 else ""
+            body += f"\n\n<b>Не смогли:</b>\n<code>{err_sample}{err_extra}</code>"
+        body += f"\n\n{scan_line}"
+        await safe_edit(msg, body, parse_mode=ParseMode.HTML)
     else:
+        # Ни одного файла → реальный фейл
         await safe_edit(
             msg,
-            f"❌ yt-dlp exit={rc}\n<pre>{tail[-1500:]}</pre>",
+            f"❌ Ничего не скачалось (rc={rc}, ошибок: {len(errors)})\n<pre>{tail[-1200:]}</pre>",
             parse_mode=ParseMode.HTML,
         )
         await notify_admin(
             context,
-            f"⚠️ music-bot yt-dlp rc={rc}\nURL: {text}\n<pre>{tail[-1500:]}</pre>",
+            f"⚠️ music-bot полный фейл rc={rc}\nURL: {text}\n<pre>{tail[-1500:]}</pre>",
         )
 
 
