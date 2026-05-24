@@ -147,8 +147,15 @@ async def run_ytdlp(url: str, playlist: bool, msg) -> tuple[int, list[str], str]
         "--embed-metadata",
         "-o", out_tpl,
         flag,
-        url,
     ]
+    if playlist:
+        # Otherwise Navidrome shows each track as a separate "Unknown Album".
+        cmd += [
+            "--parse-metadata", "playlist_title:%(album)s",
+            "--parse-metadata", "playlist_index:%(track_number)s",
+            "--parse-metadata", "playlist_uploader,uploader:%(album_artist)s",
+        ]
+    cmd.append(url)
     log.info("yt-dlp: %s (playlist=%s)", url, playlist)
 
     proc = await asyncio.create_subprocess_exec(
