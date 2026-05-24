@@ -11,8 +11,9 @@ import logging
 import traceback
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, urlencode
 
+import httpx
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, RetryAfter
@@ -26,6 +27,10 @@ YT_DLP = os.environ.get("YT_DLP_BIN", "yt-dlp")  # resolved via PATH
 DENO_PATH = os.environ.get("DENO_PATH", "")  # prepended to PATH if set
 LOG_FILE = os.environ.get("LOG_FILE")  # optional file log; stdout always on
 EDIT_INTERVAL = 2.0  # seconds between Telegram message edits
+
+NAVIDROME_URL = os.environ.get("NAVIDROME_URL", "https://music.coscore.us").rstrip("/")
+NAVIDROME_USER = os.environ.get("NAVIDROME_USER", "igor")
+NAVIDROME_PASS = os.environ.get("NAVIDROME_PASS", "")
 
 # Logging: stdout always (journald/docker logs); file log only if LOG_FILE env set.
 log = logging.getLogger("music-bot")
@@ -214,25 +219,43 @@ async def notify_admin(context: ContextTypes.DEFAULT_TYPE, text: str):
         log.error("admin notify failed: %s", e)
 
 
+async def trigger_navidrome_scan() -> tuple[bool, str]:
+    """Kick off a Navidrome library scan via Subsonic API. Returns (ok, message)."""
+    if not NAVIDROME_PASS:
+        return False, "NAVIDROME_PASS env not set"
+    params = {"u": NAVIDROME_USER, "p": NAVIDROME_PASS, "v": "1.16.1", "c": "music-bot", "f": "json"}
+    url = f"{NAVIDROME_URL}/rest/startScan.view?{urlencode(params)}"
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            r = await c.get(url)
+        data = r.json().get("subsonic-response", {})
+        if data.get("status") == "ok":
+            ss = data.get("scanStatus", {})
+            return True, f"scanning={ss.get('scanning')} type={ss.get('scanType','?')}"
+        return False, f"status={data.get('status')} err={data.get('error')}"
+    except Exception as e:
+        return False, str(e)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🎵 Кинь ссылку — скачаю MP3.\n"
         "• Одиночное видео → одна песня\n"
         "• /playlist URL или ссылка вида /playlist/, /album/, /sets/ → весь плейлист\n"
         "• YouTube watch?v=…&list=… → одна песня (используй /playlist для всех)\n\n"
-        "/scan — пересканировать Navidrome (раз в час сам)"
+        "После скачивания Navidrome пересканируется автоматически.\n"
+        "/scan — ручной триггер (на всякий)"
     )
 
 
 async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ALLOWED_USERS:
         return
-    # Navidrome сканит сам каждый час (ND_SCANSCHEDULE=1h). Subsonic-scan через API
-    # требует логин/пароль — добавлю когда будут в Credentials.md.
-    await update.message.reply_text(
-        "ℹ️ Navidrome сканит автоматически каждый час.\n"
-        "Ручной /scan через Subsonic API — TODO (нужен логин/пароль)."
-    )
+    ok, msg = await trigger_navidrome_scan()
+    if ok:
+        await update.message.reply_text(f"✅ Сканирование запущено ({msg})")
+    else:
+        await update.message.reply_text(f"⚠️ Scan не удался: {msg}\nNavidrome сканит сам раз в час.")
 
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE, force_playlist: bool = False):
@@ -271,12 +294,15 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE, force_p
         return
 
     if rc == 0:
+        scan_ok, scan_msg = await trigger_navidrome_scan()
+        scan_line = "🔄 Navidrome сканирует…" if scan_ok else f"⚠️ scan: {scan_msg} (auto-scan раз в час)"
+        log.info("scan triggered: ok=%s msg=%s", scan_ok, scan_msg)
         if files:
             sample = "\n".join(f"• {Path(f).name}" for f in files[:5])
             extra = f"\n… и ещё {len(files) - 5}" if len(files) > 5 else ""
-            done = f"✅ Скачано ({len(files)})\n{sample}{extra}\n\nNavidrome подхватит ≤1ч."
+            done = f"✅ Скачано ({len(files)})\n{sample}{extra}\n\n{scan_line}"
         else:
-            done = "✅ Скачано (без файлов в логе?). Проверь NAS."
+            done = f"✅ Скачано (без файлов в логе?). Проверь NAS.\n{scan_line}"
         await safe_edit(msg, done)
         log.info("done: %d files", len(files))
     else:
