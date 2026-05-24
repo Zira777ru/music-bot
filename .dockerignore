@@ -1,0 +1,7 @@
+.git
+.gitignore
+bot.log*
+__pycache__
+*.pyc
+.venv
+README.md
